@@ -1,105 +1,289 @@
--- TYPES
-create type public.user_role as enum ('proprietaire','gerant','reception','mecanicien');
-create type public.appointment_status as enum ('attente','confirme','termine','annule');
-create type public.wo_status as enum ('nouveau','diagnostic','validation','pieces','reparation','controle','termine','livre');
-create type public.wo_priority as enum ('normale','urgente','critique');
-create type public.quote_status as enum ('brouillon','envoye','attente','accepte','refuse','expire','converti','annule');
-create type public.invoice_status as enum ('brouillon','emise','partielle','payee','retard','annulee');
-create type public.payment_method as enum ('especes','orange_money','moov_money','virement','carte','autre');
-create type public.stock_movement_type as enum ('entree','sortie','ajustement');
-create type public.po_status as enum ('brouillon','commandee','partielle','livree','annulee');
-create type public.reminder_type as enum ('rdv_j1','rdv_j2','entretien','devis_relance','vehicule_pret','paiement_relance');
-create type public.reminder_canal as enum ('sms','whatsapp','les_deux');
-create type public.reminder_statut as enum ('programme','envoye','echec','annule');
+-- ============================================================================
+-- RDV ROBOT GARAGE V2 - MODULE 0001 : SCHEMA, EXTENSIONS & TABLES
+-- ============================================================================
 
--- TABLES PRINCIPALES
-create table public.garages (
-  id uuid primary key default gen_random_uuid(), nom text not null, telephone text, whatsapp text, adresse text,
-  devise text not null default 'FCFA', tax_enabled boolean not null default true, tax_rate numeric(5,2) not null default 18,
-  slug text unique, booking_enabled boolean not null default true, nif text, rccm text, centre_fiscal text,
-  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+-- 1. EXTENSIONS REQUISES
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA extensions;
+
+-- 2. TYPES ENUM
+DO $$ BEGIN
+  CREATE TYPE public.user_role AS ENUM ('super_admin', 'admin_garage', 'receptionniste', 'mecanicien', 'comptable');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE public.appointment_status AS ENUM ('en_attente', 'confirme', 'annule', 'termine', 'en_retard');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE public.work_order_status AS ENUM ('recu', 'en_diagnostic', 'en_cours', 'en_attente_pieces', 'termine', 'livre');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE public.quote_status AS ENUM ('brouillon', 'envoye', 'accepte', 'refuse', 'expire');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE public.invoice_status AS ENUM ('brouillon', 'validee', 'payee', 'partiellement_payee', 'annulee');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE public.payment_method AS ENUM ('especes', 'orange_money', 'moov_money', 'carte_bancaire', 'cheque', 'virement');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE public.notification_channel AS ENUM ('sms', 'whatsapp', 'email');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  CREATE TYPE public.notification_status AS ENUM ('en_attente', 'envoye', 'echoue');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- 3. TABLES PRINCIPALES
+
+-- GARAGES
+CREATE TABLE IF NOT EXISTS public.garages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    nom TEXT NOT NULL,
+    adresse TEXT,
+    telephone TEXT NOT NULL,
+    email TEXT,
+    ifu TEXT, -- Identifiant Fiscal Unique (Burkina Faso)
+    rccm TEXT,
+    prefixe_facture TEXT DEFAULT 'FAC',
+    prefixe_or TEXT DEFAULT 'OR',
+    prefixe_devis TEXT DEFAULT 'DEV',
+    tva_applicable BOOLEAN DEFAULT true,
+    taux_tva NUMERIC(5,2) DEFAULT 18.00,
+    devise TEXT DEFAULT 'XOF',
+    logo_url TEXT,
+    actif BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-create table public.garage_users (
-  id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade,
-  user_id uuid not null references auth.users(id) on delete cascade, role public.user_role not null default 'reception',
-  nom_affiche text, telephone text, mecanicien_id uuid, actif boolean not null default true,
-  created_at timestamptz not null default now(), unique (garage_id, user_id)
+-- UTILISATEURS DU GARAGE (MEMBRES)
+CREATE TABLE IF NOT EXISTS public.garage_users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    garage_id UUID NOT NULL REFERENCES public.garages(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL, -- ID Auth Supabase
+    nom TEXT NOT NULL,
+    prenom TEXT NOT NULL,
+    telephone TEXT,
+    role public.user_role NOT NULL DEFAULT 'receptionniste',
+    actif BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(garage_id, user_id)
 );
 
-create table public.customers (
-  id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade,
-  nom text not null, telephone text, email text, adresse text, created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+-- CLIENTS
+CREATE TABLE IF NOT EXISTS public.customers (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    garage_id UUID NOT NULL REFERENCES public.garages(id) ON DELETE CASCADE,
+    nom TEXT NOT NULL,
+    prenom TEXT,
+    telephone TEXT NOT NULL,
+    telephone_secondaire TEXT,
+    email TEXT,
+    adresse TEXT,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-create table public.vehicles (
-  id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade,
-  customer_id uuid not null references public.customers(id) on delete cascade, marque text not null, modele text not null, annee int, couleur text,
-  immatriculation text, kilometrage int not null default 0, prochaine_revision date, created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+-- VÉHICULES
+CREATE TABLE IF NOT EXISTS public.vehicles (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    garage_id UUID NOT NULL REFERENCES public.garages(id) ON DELETE CASCADE,
+    customer_id UUID NOT NULL REFERENCES public.customers(id) ON DELETE CASCADE,
+    immatriculation TEXT NOT NULL,
+    marque TEXT NOT NULL,
+    modele TEXT NOT NULL,
+    annee INTEGER,
+    chassis_vin TEXT,
+    carburant TEXT,
+    kilometrage INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-create table public.mechanics (
-  id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade,
-  nom text not null, telephone text, specialite text, experience int default 0, actif boolean not null default true,
-  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
-);
-alter table public.garage_users add constraint garage_users_mecanicien_fk foreign key (mecanicien_id) references public.mechanics(id) on delete set null;
-
-create table public.appointments (
-  id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade,
-  customer_id uuid not null references public.customers(id), vehicle_id uuid not null references public.vehicles(id), mechanic_id uuid references public.mechanics(id),
-  service text not null, notes text, starts_at timestamptz not null, ends_at timestamptz not null, statut public.appointment_status not null default 'attente',
-  work_order_id uuid, created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
-  constraint appt_time_valid check (ends_at > starts_at)
-);
-
-create table public.work_orders (
-  id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, numero text,
-  appointment_id uuid references public.appointments(id), customer_id uuid not null references public.customers(id), vehicle_id uuid not null references public.vehicles(id),
-  mechanic_id uuid references public.mechanics(id), intervention text not null, travaux text, symptomes text, cause_identifiee text, controles jsonb not null default '{}',
-  temps_estime_h numeric(6,2) not null default 0, photos text[] not null default '{}', est_main_oeuvre bigint not null default 0, est_pieces bigint not null default 0,
-  date_entree date not null default current_date, date_sortie_prevue date, date_sortie_reelle date, statut public.wo_status not null default 'nouveau',
-  priorite public.wo_priority not null default 'normale', observations text, heure_debut time, heure_pause time, heure_reprise time, heure_fin time,
-  qc_essai boolean not null default false, qc_niveaux boolean not null default false, qc_voyants boolean not null default false, qc_serrage boolean not null default false, qc_nettoyage boolean not null default false,
-  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique (garage_id, numero)
+-- PIÈCES / STOCK
+CREATE TABLE IF NOT EXISTS public.parts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    garage_id UUID NOT NULL REFERENCES public.garages(id) ON DELETE CASCADE,
+    reference TEXT NOT NULL,
+    designation TEXT NOT NULL,
+    prix_achat NUMERIC(12,2) DEFAULT 0,
+    prix_vente NUMERIC(12,2) DEFAULT 0,
+    quantite_stock INTEGER DEFAULT 0,
+    seuil_alerte INTEGER DEFAULT 5,
+    emplacement TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(garage_id, reference)
 );
 
-create table public.work_order_parts (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, work_order_id uuid not null references public.work_orders(id) on delete cascade, nom text not null, reference text, part_id uuid, qte int not null default 1, prix_unitaire bigint not null default 0);
-create table public.work_order_history (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, work_order_id uuid not null references public.work_orders(id) on delete cascade, label text not null, created_at timestamptz not null default now());
+-- RENDEZ-VOUS (RDV)
+CREATE TABLE IF NOT EXISTS public.appointments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    garage_id UUID NOT NULL REFERENCES public.garages(id) ON DELETE CASCADE,
+    customer_id UUID REFERENCES public.customers(id) ON DELETE SET NULL,
+    vehicle_id UUID REFERENCES public.vehicles(id) ON DELETE SET NULL,
+    date_heure TIMESTAMPTZ NOT NULL,
+    motif TEXT NOT NULL,
+    status public.appointment_status DEFAULT 'en_attente',
+    notes TEXT,
+    token_suivi TEXT UNIQUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
 
-create table public.suppliers (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, nom text not null, telephone text, specialite text, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
-create table public.parts (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, nom text not null, reference text not null, categorie text, marque text, prix_achat bigint not null default 0, prix_vente bigint not null default 0, stock int not null default 0, seuil_min int not null default 0, emplacement text, supplier_id uuid references public.suppliers(id) on delete set null, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique (garage_id, reference), constraint parts_stock_positif check (stock >= 0));
-alter table public.work_order_parts add constraint wo_parts_part_fk foreign key (part_id) references public.parts(id) on delete set null;
+-- ORDRES DE RÉPARATION (OR)
+CREATE TABLE IF NOT EXISTS public.work_orders (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    garage_id UUID NOT NULL REFERENCES public.garages(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    customer_id UUID NOT NULL REFERENCES public.customers(id) ON DELETE RESTRICT,
+    vehicle_id UUID NOT NULL REFERENCES public.vehicles(id) ON DELETE RESTRICT,
+    appointment_id UUID REFERENCES public.appointments(id) ON DELETE SET NULL,
+    mecanicien_id UUID REFERENCES public.garage_users(id) ON DELETE SET NULL,
+    status public.work_order_status DEFAULT 'recu',
+    kilometrage_entree INTEGER,
+    symptomes TEXT,
+    diagnostic TEXT,
+    travaux_effectues TEXT,
+    date_entree TIMESTAMPTZ DEFAULT NOW(),
+    date_sortie_prevue TIMESTAMPTZ,
+    date_sortie_reelle TIMESTAMPTZ,
+    total_ht NUMERIC(12,2) DEFAULT 0,
+    total_tva NUMERIC(12,2) DEFAULT 0,
+    total_ttc NUMERIC(12,2) DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(garage_id, number)
+);
 
-create table public.stock_movements (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, part_id uuid not null references public.parts(id) on delete cascade, type public.stock_movement_type not null, qte int not null check (qte > 0), raison text, user_label text, created_at timestamptz not null default now());
-create table public.purchase_orders (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, numero text, supplier_id uuid references public.suppliers(id), date_commande date not null default current_date, livraison_prevue date, statut public.po_status not null default 'brouillon', notes text, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique (garage_id, numero));
-create table public.purchase_order_lines (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, po_id uuid not null references public.purchase_orders(id) on delete cascade, part_id uuid not null references public.parts(id), qte_commandee int not null check (qte_commandee > 0), qte_recue int not null default 0, prix_achat bigint not null default 0, constraint po_line_recu check (qte_recue <= qte_commandee));
+-- DEVIS (QUOTES)
+CREATE TABLE IF NOT EXISTS public.quotes (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    garage_id UUID NOT NULL REFERENCES public.garages(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    customer_id UUID NOT NULL REFERENCES public.customers(id) ON DELETE RESTRICT,
+    vehicle_id UUID REFERENCES public.vehicles(id) ON DELETE SET NULL,
+    work_order_id UUID REFERENCES public.work_orders(id) ON DELETE SET NULL,
+    status public.quote_status DEFAULT 'brouillon',
+    date_expiration DATE,
+    total_ht NUMERIC(12,2) DEFAULT 0,
+    total_tva NUMERIC(12,2) DEFAULT 0,
+    total_ttc NUMERIC(12,2) DEFAULT 0,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(garage_id, number)
+);
 
-create table public.quotes (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, numero text, customer_id uuid not null references public.customers(id), vehicle_id uuid references public.vehicles(id), work_order_id uuid references public.work_orders(id), date_emission date not null default current_date, date_expiration date, description text, conditions text, remise bigint not null default 0, statut public.quote_status not null default 'brouillon', public_token text unique default encode(gen_random_bytes(16),'hex'), token_expires_at timestamptz, sous_total bigint not null default 0, tva bigint not null default 0, total bigint not null default 0, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique (garage_id, numero));
-create table public.quote_lines (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, quote_id uuid not null references public.quotes(id) on delete cascade, type text not null check (type in ('main_oeuvre','piece','service','autre')), designation text not null, reference text, part_id uuid references public.parts(id) on delete set null, qte numeric(10,2) not null check (qte > 0), prix_unitaire bigint not null check (prix_unitaire >= 0), total_ligne bigint generated always as (round(qte * prix_unitaire)::bigint) stored);
+-- FACTURES (INVOICES)
+CREATE TABLE IF NOT EXISTS public.invoices (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    garage_id UUID NOT NULL REFERENCES public.garages(id) ON DELETE CASCADE,
+    number TEXT NOT NULL,
+    customer_id UUID NOT NULL REFERENCES public.customers(id) ON DELETE RESTRICT,
+    vehicle_id UUID REFERENCES public.vehicles(id) ON DELETE SET NULL,
+    work_order_id UUID REFERENCES public.work_orders(id) ON DELETE SET NULL,
+    quote_id UUID REFERENCES public.quotes(id) ON DELETE SET NULL,
+    status public.invoice_status DEFAULT 'brouillon',
+    total_ht NUMERIC(12,2) DEFAULT 0,
+    total_tva NUMERIC(12,2) DEFAULT 0,
+    total_ttc NUMERIC(12,2) DEFAULT 0,
+    montant_paye NUMERIC(12,2) DEFAULT 0,
+    solde_du NUMERIC(12,2) DEFAULT 0,
+    -- Champs E-Facture
+    einvoice_numero TEXT,
+    einvoice_qr_code TEXT,
+    einvoice_hash TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(garage_id, number)
+);
 
-create table public.invoices (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, numero text, customer_id uuid not null references public.customers(id), vehicle_id uuid references public.vehicles(id), work_order_id uuid references public.work_orders(id), quote_id uuid references public.quotes(id), date_emission date not null default current_date, echeance date, remise bigint not null default 0, notes text, statut public.invoice_status not null default 'emise', sous_total bigint not null default 0, tva bigint not null default 0, total bigint not null default 0, montant_paye bigint not null default 0, einvoice_numero text, einvoice_emise_at timestamptz, einvoice_hash text, einvoice_payload jsonb, einvoice_statut text check (einvoice_statut in ('generee','transmise','validee','rejetee')), created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique (garage_id, numero));
-create table public.invoice_lines (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, invoice_id uuid not null references public.invoices(id) on delete cascade, type text not null check (type in ('main_oeuvre','piece','service','autre')), designation text not null, reference text, part_id uuid references public.parts(id) on delete set null, qte numeric(10,2) not null check (qte > 0), prix_unitaire bigint not null check (prix_unitaire >= 0), total_ligne bigint generated always as (round(qte * prix_unitaire)::bigint) stored);
+-- 4. TABLES DE DÉTAILS / LIGNES
 
-create table public.payments (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, numero text, invoice_id uuid not null references public.invoices(id), customer_id uuid not null references public.customers(id), montant bigint not null check (montant > 0), methode public.payment_method not null, reference text, notes text, encaisse_par uuid references auth.users(id), user_label text, paid_at date not null default current_date, created_at timestamptz not null default now(), unique (garage_id, numero));
+-- LIGNES DE DEVIS
+CREATE TABLE IF NOT EXISTS public.quote_lines (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    quote_id UUID NOT NULL REFERENCES public.quotes(id) ON DELETE CASCADE,
+    part_id UUID REFERENCES public.parts(id) ON DELETE SET NULL,
+    designation TEXT NOT NULL,
+    quantite NUMERIC(10,2) NOT NULL DEFAULT 1,
+    prix_unitaire_ht NUMERIC(12,2) NOT NULL DEFAULT 0,
+    montant_ht NUMERIC(12,2) NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
 
-create table public.document_counters (garage_id uuid not null references public.garages(id) on delete cascade, kind text not null check (kind in ('or','dev','fact','rec','cmd','efact')), annee int not null, compteur int not null default 0, primary key (garage_id, kind, annee));
-create table public.audit_log (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, user_id uuid, user_label text, action text not null, detail text, created_at timestamptz not null default now());
+-- LIGNES DE FACTURES
+CREATE TABLE IF NOT EXISTS public.invoice_lines (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    invoice_id UUID NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+    part_id UUID REFERENCES public.parts(id) ON DELETE SET NULL,
+    designation TEXT NOT NULL,
+    quantite NUMERIC(10,2) NOT NULL DEFAULT 1,
+    prix_unitaire_ht NUMERIC(12,2) NOT NULL DEFAULT 0,
+    montant_ht NUMERIC(12,2) NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
 
-create table public.reminder_templates (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, type public.reminder_type not null, modele text not null, actif boolean not null default true, updated_at timestamptz not null default now(), unique (garage_id, type));
-create table public.reminders (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, type public.reminder_type not null, canal public.reminder_canal not null default 'sms', customer_id uuid not null references public.customers(id), vehicle_id uuid references public.vehicles(id), appointment_id uuid references public.appointments(id), work_order_id uuid references public.work_orders(id), quote_id uuid references public.quotes(id), invoice_id uuid references public.invoices(id), telephone text not null, message text not null, statut public.reminder_statut not null default 'programme', scheduled_at timestamptz not null default now(), sent_at timestamptz, provider text, provider_ref text, erreur text, created_at timestamptz not null default now());
+-- PIÈCES D'UN ORDRE DE RÉPARATION
+CREATE TABLE IF NOT EXISTS public.work_order_parts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    work_order_id UUID NOT NULL REFERENCES public.work_orders(id) ON DELETE CASCADE,
+    part_id UUID REFERENCES public.parts(id) ON DELETE RESTRICT,
+    quantite NUMERIC(10,2) NOT NULL DEFAULT 1,
+    prix_unitaire_ht NUMERIC(12,2) NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
 
-create table public.bonus_rules (id uuid primary key default gen_random_uuid(), garage_id uuid not null unique references public.garages(id) on delete cascade, taux_main_oeuvre numeric(5,2) not null default 10, prime_qualite bigint not null default 5000, actif boolean not null default true, updated_at timestamptz not null default now());
+-- PAIEMENTS
+CREATE TABLE IF NOT EXISTS public.payments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    garage_id UUID NOT NULL REFERENCES public.garages(id) ON DELETE CASCADE,
+    invoice_id UUID NOT NULL REFERENCES public.invoices(id) ON DELETE CASCADE,
+    montant NUMERIC(12,2) NOT NULL,
+    methode public.payment_method NOT NULL DEFAULT 'especes',
+    reference_transaction TEXT,
+    date_paiement TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
 
-create table public.notification_queue (id uuid primary key default gen_random_uuid(), garage_id uuid not null references public.garages(id) on delete cascade, customer_id uuid not null references public.customers(id), type text not null check (type in ('efacture_generee','rdv_confirme','rappel')), payload jsonb not null, canal text not null default 'sms', statut text not null default 'pending' check (statut in ('pending','sent','failed')), created_at timestamptz not null default now(), sent_at timestamptz, erreur text);
+-- AUDIT DU STOCK
+CREATE TABLE IF NOT EXISTS public.parts_stock_audit (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    garage_id UUID NOT NULL REFERENCES public.garages(id) ON DELETE CASCADE,
+    part_id UUID NOT NULL REFERENCES public.parts(id) ON DELETE CASCADE,
+    delta INTEGER NOT NULL,
+    reason TEXT,
+    created_by UUID,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
 
--- INDEX
-create index idx_garage_users_garage on public.garage_users (garage_id);
-create index idx_customers_garage on public.customers (garage_id);
-create index idx_vehicles_garage on public.vehicles (garage_id, customer_id);
-create index idx_appointments_garage on public.appointments (garage_id, starts_at);
-create index idx_wo_garage on public.work_orders (garage_id, statut);
-create index idx_parts_garage on public.parts (garage_id);
-create index idx_invoices_garage on public.invoices (garage_id, statut);
-create index idx_reminders_garage on public.reminders (garage_id, statut, scheduled_at);
-create index idx_notif_queue_pending on public.notification_queue (statut, created_at) where statut = 'pending';
+-- QUEUE DE NOTIFICATIONS
+CREATE TABLE IF NOT EXISTS public.notifications_queue (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    garage_id UUID NOT NULL REFERENCES public.garages(id) ON DELETE CASCADE,
+    canal public.notification_channel NOT NULL,
+    destinataire TEXT NOT NULL,
+    message TEXT NOT NULL,
+    status public.notification_status DEFAULT 'en_attente',
+    tentatives INTEGER DEFAULT 0,
+    erreur_log TEXT,
+    sent_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5. INDEXATION OPTIMISÉE POUR LE MULTI-TENANT ET LA RECHERCHE
+CREATE INDEX IF NOT EXISTS idx_customers_garage_phone ON public.customers (garage_id, telephone);
+CREATE INDEX IF NOT EXISTS idx_vehicles_garage_immat ON public.vehicles (garage_id, immatriculation);
+CREATE INDEX IF NOT EXISTS idx_work_orders_garage_status ON public.work_orders (garage_id, status);
+CREATE INDEX IF NOT EXISTS idx_invoices_garage_status ON public.invoices (garage_id, status);
+CREATE INDEX IF NOT EXISTS idx_invoices_einvoice_num ON public.invoices (einvoice_numero) WHERE einvoice_numero IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_notifications_pending ON public.notifications_queue (status, created_at) WHERE status = 'en_attente';
