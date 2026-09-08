@@ -1,0 +1,1 @@
+supabase/migrations/0001_schema_base.sql
