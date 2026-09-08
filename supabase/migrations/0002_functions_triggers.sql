@@ -1,127 +1,286 @@
-create or replace function public.set_updated_at() returns trigger language plpgsql as $$ begin new.updated_at = now(); return new; end $$;
-create trigger trg_garages_updated before update on public.garages for each row execute function public.set_updated_at();
-create trigger trg_customers_updated before update on public.customers for each row execute function public.set_updated_at();
-create trigger trg_vehicles_updated before update on public.vehicles for each row execute function public.set_updated_at();
-create trigger trg_mechanics_updated before update on public.mechanics for each row execute function public.set_updated_at();
-create trigger trg_appointments_updated before update on public.appointments for each row execute function public.set_updated_at();
-create trigger trg_wo_updated before update on public.work_orders for each row execute function public.set_updated_at();
-create trigger trg_suppliers_updated before update on public.suppliers for each row execute function public.set_updated_at();
-create trigger trg_parts_updated before update on public.parts for each row execute function public.set_updated_at();
-create trigger trg_po_updated before update on public.purchase_orders for each row execute function public.set_updated_at();
-create trigger trg_quotes_updated before update on public.quotes for each row execute function public.set_updated_at();
-create trigger trg_invoices_updated before update on public.invoices for each row execute function public.set_updated_at();
+-- ============================================================================
+-- RDV ROBOT GARAGE V2 - MODULE 0002 : FONCTIONS, TRIGGERS & CALCULS
+-- ============================================================================
 
-create or replace function public.current_garage_id(p_context_garage uuid default null) returns uuid language sql stable security definer set search_path = public as $$ select coalesce(p_context_garage, (select garage_id from garage_users where user_id = auth.uid() and actif = true limit 1)); $$;
-create or replace function public.current_user_role() returns public.user_role language sql stable security definer set search_path = public as $$ select role from garage_users where user_id = auth.uid() and actif = true limit 1; $$;
-create or replace function public.has_role(roles public.user_role[]) returns boolean language sql stable security definer set search_path = public as $$ select exists (select 1 from garage_users where user_id = auth.uid() and actif = true and role = any(roles)); $$;
-create or replace function public.current_mechanic_id() returns uuid language sql stable security definer set search_path = public as $$ select mecanicien_id from garage_users where user_id = auth.uid() and actif = true limit 1; $$;
-create or replace function public.current_user_label() returns text language sql stable security definer set search_path = public as $$ select coalesce(nom_affiche, 'Utilisateur') from garage_users where user_id = auth.uid() and actif = true limit 1; $$;
+-- 1. HELPER SÉCURISÉ MULTI-TENANT (CURRENT GARAGE ID)
+CREATE OR REPLACE FUNCTION public.current_garage_id(p_context_garage UUID DEFAULT NULL) 
+RETURNS UUID 
+LANGUAGE sql 
+STABLE 
+SECURITY DEFINER 
+SET search_path = public 
+AS $$
+  SELECT garage_id 
+  FROM public.garage_users 
+  WHERE user_id = auth.uid() 
+    AND actif = true 
+    AND (p_context_garage IS NULL OR garage_id = p_context_garage)
+  LIMIT 1;
+$$;
 
-create or replace function public.next_doc_number(p_garage uuid, p_kind text) returns text language plpgsql security definer set search_path = public as $$
-declare v_prefix text; v_pad int; v_year int := extract(year from now())::int; v_n int;
-begin
-  if p_garage is distinct from public.current_garage_id() then raise exception 'Garage invalide'; end if;
-  v_prefix := case p_kind when 'or' then 'OR' when 'dev' then 'DEV' when 'fact' then 'FACT' when 'rec' then 'REC' when 'cmd' then 'CMD' when 'efact' then 'EFACT' end;
-  if v_prefix is null then raise exception 'Type inconnu: %', p_kind; end if;
-  v_pad := case when p_kind in ('or','efact') then 6 else 4 end;
-  insert into document_counters (garage_id, kind, annee, compteur) values (p_garage, p_kind, v_year, 1)
-  on conflict (garage_id, kind, annee) do update set compteur = document_counters.compteur + 1 returning compteur into v_n;
-  return format('%s-%s-%s', v_prefix, v_year, lpad(v_n::text, v_pad, '0'));
-end $$;
+-- 2. DÉCLENCHEUR TIMESTAMPTZ (UPDATED_AT AUTOMATIQUE)
+CREATE OR REPLACE FUNCTION public.trg_set_updated_at()
+RETURNS TRIGGER 
+LANGUAGE plpgsql 
+AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$;
 
-create or replace function public.appointment_no_overlap() returns trigger language plpgsql as $$
-begin
-  if new.statut = 'annule' then return new; end if;
-  if exists (select 1 from appointments a where a.garage_id = new.garage_id and a.id is distinct from new.id and a.statut <> 'annule'
-    and tstzrange(a.starts_at, a.ends_at) && tstzrange(new.starts_at, new.ends_at)
-    and ((new.mechanic_id is not null and a.mechanic_id = new.mechanic_id) or a.vehicle_id = new.vehicle_id))
-  then raise exception 'Double réservation impossible'; end if;
-  return new;
-end $$;
-create trigger trg_appointment_overlap before insert or update on public.appointments for each row execute function public.appointment_no_overlap();
+-- Application du trigger updated_at sur toutes les tables principales
+DROP TRIGGER IF EXISTS trg_garages_updated_at ON public.garages;
+CREATE TRIGGER trg_garages_updated_at BEFORE UPDATE ON public.garages FOR EACH ROW EXECUTE FUNCTION public.trg_set_updated_at();
 
-create or replace function public.work_orders_before() returns trigger language plpgsql security definer set search_path = public as $$
-begin
-  if new.numero is null then new.numero := public.next_doc_number(new.garage_id, 'or'); end if;
-  if new.statut = 'livre' and old.statut is distinct from 'livre' then
-    if not (new.qc_essai and new.qc_niveaux and new.qc_voyants and new.qc_serrage and new.qc_nettoyage) then raise exception 'Livraison bloquée: QC incomplet'; end if;
-  end if;
-  if new.statut = 'termine' and old.statut is distinct from 'termine' and new.date_sortie_reelle is null then new.date_sortie_reelle := current_date; end if;
-  return new;
-end $$;
-create trigger trg_wo_before before insert or update on public.work_orders for each row execute function public.work_orders_before();
+DROP TRIGGER IF EXISTS trg_garage_users_updated_at ON public.garage_users;
+CREATE TRIGGER trg_garage_users_updated_at BEFORE UPDATE ON public.garage_users FOR EACH ROW EXECUTE FUNCTION public.trg_set_updated_at();
 
-create or replace function public.work_orders_history() returns trigger language plpgsql security definer set search_path = public as $$
-begin
-  if tg_op = 'INSERT' then insert into work_order_history (garage_id, work_order_id, label) values (new.garage_id, new.id, 'OR créé (' || new.numero || ')');
-  elsif new.statut is distinct from old.statut then insert into work_order_history (garage_id, work_order_id, label) values (new.garage_id, new.id, 'Statut → ' || new.statut::text);
-  end if;
-  return new;
-end $$;
-create trigger trg_wo_history after insert or update on public.work_orders for each row execute function public.work_orders_history();
+DROP TRIGGER IF EXISTS trg_customers_updated_at ON public.customers;
+CREATE TRIGGER trg_customers_updated_at BEFORE UPDATE ON public.customers FOR EACH ROW EXECUTE FUNCTION public.trg_set_updated_at();
 
-create or replace function public.quotes_before() returns trigger language plpgsql security definer set search_path = public as $$ begin if new.numero is null then new.numero := public.next_doc_number(new.garage_id, 'dev'); end if; return new; end $$;
-create trigger trg_quotes_before before insert on public.quotes for each row execute function public.quotes_before();
-create or replace function public.invoices_before() returns trigger language plpgsql security definer set search_path = public as $$ begin if new.numero is null then new.numero := public.next_doc_number(new.garage_id, 'fact'); end if; return new; end $$;
-create trigger trg_invoices_before before insert on public.invoices for each row execute function public.invoices_before();
-create or replace function public.po_before() returns trigger language plpgsql security definer set search_path = public as $$ begin if new.numero is null then new.numero := public.next_doc_number(new.garage_id, 'cmd'); end if; return new; end $$;
-create trigger trg_po_before before insert on public.purchase_orders for each row execute function public.po_before();
+DROP TRIGGER IF EXISTS trg_vehicles_updated_at ON public.vehicles;
+CREATE TRIGGER trg_vehicles_updated_at BEFORE UPDATE ON public.vehicles FOR EACH ROW EXECUTE FUNCTION public.trg_set_updated_at();
 
-create or replace function public.recalc_quote_totals() returns trigger language plpgsql security definer set search_path = public as $$
-declare v_quote_id uuid := coalesce(new.quote_id, old.quote_id); v_garage uuid; v_st bigint; v_remise bigint; v_ht bigint; v_tva bigint;
-begin
-  select garage_id into v_garage from quotes where id = v_quote_id;
-  select coalesce(sum(total_ligne),0) into v_st from quote_lines where quote_id = v_quote_id;
-  select remise into v_remise from quotes where id = v_quote_id;
-  v_ht := greatest(0, v_st - v_remise);
-  select case when g.tax_enabled then round(v_ht * g.tax_rate / 100)::bigint else 0 end into v_tva from garages g where g.id = v_garage;
-  update quotes set sous_total = v_st, tva = v_tva, total = v_ht + v_tva where id = v_quote_id;
-  return null;
-end $$;
-create trigger trg_quote_lines_calc after insert or update or delete on public.quote_lines for each row execute function public.recalc_quote_totals();
+DROP TRIGGER IF EXISTS trg_parts_updated_at ON public.parts;
+CREATE TRIGGER trg_parts_updated_at BEFORE UPDATE ON public.parts FOR EACH ROW EXECUTE FUNCTION public.trg_set_updated_at();
 
-create or replace function public.recalc_invoice_totals() returns trigger language plpgsql security definer set search_path = public as $$
-declare v_invoice_id uuid := coalesce(new.invoice_id, old.invoice_id); v_garage uuid; v_st bigint; v_remise bigint; v_ht bigint; v_tva bigint;
-begin
-  select garage_id into v_garage from invoices where id = v_invoice_id;
-  select coalesce(sum(total_ligne),0) into v_st from invoice_lines where invoice_id = v_invoice_id;
-  select remise into v_remise from invoices where id = v_invoice_id;
-  v_ht := greatest(0, v_st - v_remise);
-  select case when g.tax_enabled then round(v_ht * g.tax_rate / 100)::bigint else 0 end into v_tva from garages g where g.id = v_garage;
-  update invoices set sous_total = v_st, tva = v_tva, total = v_ht + v_tva where id = v_invoice_id;
-  return null;
-end $$;
-create trigger trg_invoice_lines_calc after insert or update or delete on public.invoice_lines for each row execute function public.recalc_invoice_totals();
+DROP TRIGGER IF EXISTS trg_appointments_updated_at ON public.appointments;
+CREATE TRIGGER trg_appointments_updated_at BEFORE UPDATE ON public.appointments FOR EACH ROW EXECUTE FUNCTION public.trg_set_updated_at();
 
-create or replace function public.refresh_invoice_status(p_invoice uuid) returns void language plpgsql security definer set search_path = public as $$
-declare v_total bigint; v_paye bigint; v_echeance date; v_statut public.invoice_status; v_current public.invoice_status;
-begin
-  select total, montant_paye, echeance, statut into v_total, v_paye, v_echeance, v_current from invoices where id = p_invoice for update;
-  if not found then return; end if;
-  select coalesce(sum(montant),0) into v_paye from payments where invoice_id = p_invoice;
-  if v_current in ('brouillon','annulee') then update invoices set montant_paye = v_paye where id = p_invoice; return; end if;
-  v_statut := case when v_total > 0 and v_paye >= v_total then 'payee'::public.invoice_status when v_paye > 0 then 'partielle'::public.invoice_status when v_echeance is not null and v_echeance < current_date then 'retard'::public.invoice_status else 'emise'::public.invoice_status end;
-  update invoices set montant_paye = v_paye, statut = v_statut where id = p_invoice;
-end $$;
+DROP TRIGGER IF EXISTS trg_work_orders_updated_at ON public.work_orders;
+CREATE TRIGGER trg_work_orders_updated_at BEFORE UPDATE ON public.work_orders FOR EACH ROW EXECUTE FUNCTION public.trg_set_updated_at();
 
-create or replace function public.audit_write(p_garage uuid, p_action text, p_detail text) returns void language plpgsql security definer set search_path = public as $$ begin insert into audit_log (garage_id, user_id, user_label, action, detail) values (p_garage, auth.uid(), public.current_user_label(), p_action, p_detail); end $$;
+DROP TRIGGER IF EXISTS trg_quotes_updated_at ON public.quotes;
+CREATE TRIGGER trg_quotes_updated_at BEFORE UPDATE ON public.quotes FOR EACH ROW EXECUTE FUNCTION public.trg_set_updated_at();
 
-create or replace function public.payments_after() returns trigger language plpgsql security definer set search_path = public as $$
-begin perform public.refresh_invoice_status(coalesce(new.invoice_id, old.invoice_id));
-  if tg_op = 'INSERT' then perform public.audit_write(new.garage_id, 'Paiement enregistré', new.numero || ' · ' || new.montant || ' FCFA');
-  return null;
-end $$;
-create trigger trg_payments_after after insert or update or delete on public.payments for each row execute function public.payments_after();
+DROP TRIGGER IF EXISTS trg_invoices_updated_at ON public.invoices;
+CREATE TRIGGER trg_invoices_updated_at BEFORE UPDATE ON public.invoices FOR EACH ROW EXECUTE FUNCTION public.trg_set_updated_at();
 
-create or replace function public.invoices_after() returns trigger language plpgsql security definer set search_path = public as $$
-begin if tg_op = 'INSERT' then perform public.refresh_invoice_status(new.id); perform public.audit_write(new.garage_id, 'Création facture', new.numero); return null; end if;
-end $$;
-create trigger trg_invoices_after after insert or update on public.invoices for each row execute function public.invoices_after();
+-- 3. GENERATION AUTOMATIQUE DE NUMÉROS SÉQUENTIELS DE DOCUMENTS
+CREATE OR REPLACE FUNCTION public.next_doc_number(
+    p_garage_id UUID, 
+    p_type TEXT
+) 
+RETURNS TEXT 
+LANGUAGE plpgsql 
+SECURITY DEFINER 
+SET search_path = public 
+AS $$
+DECLARE
+  v_prefix TEXT;
+  v_year TEXT;
+  v_count INTEGER;
+  v_next_num TEXT;
+BEGIN
+  v_year := TO_CHAR(NOW(), 'YY');
 
-create or replace function public.quotes_after() returns trigger language plpgsql security definer set search_path = public as $$
-begin if new.statut is distinct from old.statut then perform public.audit_write(new.garage_id, 'Devis ' || new.statut::text, new.numero); end if; return new; end $$;
-create trigger trg_quotes_after after update on public.quotes for each row execute function public.quotes_after();
+  -- Récupérer le préfixe configuré pour le garage
+  IF p_type = 'OR' THEN
+    SELECT COALESCE(prefixe_or, 'OR') INTO v_prefix FROM public.garages WHERE id = p_garage_id;
+    SELECT COUNT(*) + 1 INTO v_count FROM public.work_orders WHERE garage_id = p_garage_id AND EXTRACT(YEAR FROM created_at) = EXTRACT(YEAR FROM NOW());
+  ELSIF p_type = 'DEV' THEN
+    SELECT COALESCE(prefixe_devis, 'DEV') INTO v_prefix FROM public.garages WHERE id = p_garage_id;
+    SELECT COUNT(*) + 1 INTO v_count FROM public.quotes WHERE garage_id = p_garage_id AND EXTRACT(YEAR FROM created_at) = EXTRACT(YEAR FROM NOW());
+  ELSIF p_type = 'FAC' THEN
+    SELECT COALESCE(prefixe_facture, 'FAC') INTO v_prefix FROM public.garages WHERE id = p_garage_id;
+    SELECT COUNT(*) + 1 INTO v_count FROM public.invoices WHERE garage_id = p_garage_id AND EXTRACT(YEAR FROM created_at) = EXTRACT(YEAR FROM NOW());
+  ELSE
+    RAISE EXCEPTION 'Type de document invalide: %', p_type;
+  END IF;
 
-create or replace function public.parts_stock_audit() returns trigger language plpgsql security definer set search_path = public as $$
-begin if new.stock is distinct from old.stock then insert into stock_movements (garage_id, part_id, type, qte, raison, user_label) values (new.garage_id, new.id, 'ajustement', abs(new.stock - old.stock), 'Ajustement direct', public.current_user_label()); end if; return new; end $$;
-create trigger trg_parts_stock_audit before update on public.parts for each row execute function public.parts_stock_audit();
+  v_next_num := v_prefix || '-' || v_year || '-' || LPAD(v_count::TEXT, 5, '0');
+  RETURN v_next_num;
+END;
+$$;
+
+-- 4. TRIGGERS D'ATTRIBUTION AUTOMATIQUE DES NUMÉROS DE DOCUMENTS
+CREATE OR REPLACE FUNCTION public.trg_assign_doc_number()
+RETURNS TRIGGER 
+LANGUAGE plpgsql 
+AS $$
+BEGIN
+  IF NEW.number IS NULL OR NEW.number = '' THEN
+    IF TG_TABLE_NAME = 'work_orders' THEN
+      NEW.number := public.next_doc_number(NEW.garage_id, 'OR');
+    ELSIF TG_TABLE_NAME = 'quotes' THEN
+      NEW.number := public.next_doc_number(NEW.garage_id, 'DEV');
+    ELSIF TG_TABLE_NAME = 'invoices' THEN
+      NEW.number := public.next_doc_number(NEW.garage_id, 'FAC');
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_wo_assign_num ON public.work_orders;
+CREATE TRIGGER trg_wo_assign_num BEFORE INSERT ON public.work_orders FOR EACH ROW EXECUTE FUNCTION public.trg_assign_doc_number();
+
+DROP TRIGGER IF EXISTS trg_quote_assign_num ON public.quotes;
+CREATE TRIGGER trg_quote_assign_num BEFORE INSERT ON public.quotes FOR EACH ROW EXECUTE FUNCTION public.trg_assign_doc_number();
+
+DROP TRIGGER IF EXISTS trg_invoice_assign_num ON public.invoices;
+CREATE TRIGGER trg_invoice_assign_num BEFORE INSERT ON public.invoices FOR EACH ROW EXECUTE FUNCTION public.trg_assign_doc_number();
+
+-- 5. CALCULS DES MONTANTS SUR LES DEVIS ET FACTURES
+CREATE OR REPLACE FUNCTION public.trg_recalculate_quote_totals()
+RETURNS TRIGGER 
+LANGUAGE plpgsql 
+SECURITY DEFINER 
+SET search_path = public 
+AS $$
+DECLARE
+  v_quote_id UUID;
+  v_garage_id UUID;
+  v_tva_applicable BOOLEAN;
+  v_taux_tva NUMERIC(5,2);
+  v_total_ht NUMERIC(12,2) := 0;
+  v_total_tva NUMERIC(12,2) := 0;
+  v_total_ttc NUMERIC(12,2) := 0;
+BEGIN
+  v_quote_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.quote_id ELSE NEW.quote_id END;
+
+  SELECT q.garage_id, g.tva_applicable, g.taux_tva 
+  INTO v_garage_id, v_tva_applicable, v_taux_tva
+  FROM public.quotes q
+  JOIN public.garages g ON g.id = q.garage_id
+  WHERE q.id = v_quote_id;
+
+  SELECT COALESCE(SUM(montant_ht), 0) INTO v_total_ht 
+  FROM public.quote_lines 
+  WHERE quote_id = v_quote_id;
+
+  IF v_tva_applicable THEN
+    v_total_tva := ROUND(v_total_ht * (v_taux_tva / 100.0), 2);
+  END IF;
+  
+  v_total_ttc := v_total_ht + v_total_tva;
+
+  UPDATE public.quotes 
+  SET total_ht = v_total_ht,
+      total_tva = v_total_tva,
+      total_ttc = v_total_ttc
+  WHERE id = v_quote_id;
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_quote_lines_calc ON public.quote_lines;
+CREATE TRIGGER trg_quote_lines_calc AFTER INSERT OR UPDATE OR DELETE ON public.quote_lines FOR EACH ROW EXECUTE FUNCTION public.trg_recalculate_quote_totals();
+
+CREATE OR REPLACE FUNCTION public.trg_recalculate_invoice_totals()
+RETURNS TRIGGER 
+LANGUAGE plpgsql 
+SECURITY DEFINER 
+SET search_path = public 
+AS $$
+DECLARE
+  v_invoice_id UUID;
+  v_garage_id UUID;
+  v_tva_applicable BOOLEAN;
+  v_taux_tva NUMERIC(5,2);
+  v_total_ht NUMERIC(12,2) := 0;
+  v_total_tva NUMERIC(12,2) := 0;
+  v_total_ttc NUMERIC(12,2) := 0;
+  v_montant_paye NUMERIC(12,2) := 0;
+BEGIN
+  v_invoice_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.invoice_id ELSE NEW.invoice_id END;
+
+  SELECT i.garage_id, i.montant_paye, g.tva_applicable, g.taux_tva 
+  INTO v_garage_id, v_montant_paye, v_tva_applicable, v_taux_tva
+  FROM public.invoices i
+  JOIN public.garages g ON g.id = i.garage_id
+  WHERE i.id = v_invoice_id;
+
+  SELECT COALESCE(SUM(montant_ht), 0) INTO v_total_ht 
+  FROM public.invoice_lines 
+  WHERE invoice_id = v_invoice_id;
+
+  IF v_tva_applicable THEN
+    v_total_tva := ROUND(v_total_ht * (v_taux_tva / 100.0), 2);
+  END IF;
+  
+  v_total_ttc := v_total_ht + v_total_tva;
+
+  UPDATE public.invoices 
+  SET total_ht = v_total_ht,
+      total_tva = v_total_tva,
+      total_ttc = v_total_ttc,
+      solde_du = v_total_ttc - COALESCE(v_montant_paye, 0)
+  WHERE id = v_invoice_id;
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_invoice_lines_calc ON public.invoice_lines;
+CREATE TRIGGER trg_invoice_lines_calc AFTER INSERT OR UPDATE OR DELETE ON public.invoice_lines FOR EACH ROW EXECUTE FUNCTION public.trg_recalculate_invoice_totals();
+
+-- 6. GESTION AUTOMATIQUE DES PAIEMENTS ET SOLDE DU
+CREATE OR REPLACE FUNCTION public.trg_update_invoice_payments()
+RETURNS TRIGGER 
+LANGUAGE plpgsql 
+SECURITY DEFINER 
+SET search_path = public 
+AS $$
+DECLARE
+  v_invoice_id UUID;
+  v_total_paye NUMERIC(12,2) := 0;
+  v_total_ttc NUMERIC(12,2) := 0;
+BEGIN
+  v_invoice_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.invoice_id ELSE NEW.invoice_id END;
+
+  SELECT COALESCE(SUM(montant), 0) INTO v_total_paye 
+  FROM public.payments 
+  WHERE invoice_id = v_invoice_id;
+
+  SELECT total_ttc INTO v_total_ttc FROM public.invoices WHERE id = v_invoice_id;
+
+  UPDATE public.invoices 
+  SET montant_paye = v_total_paye,
+      solde_du = v_total_ttc - v_total_paye,
+      status = CASE 
+        WHEN (v_total_ttc - v_total_paye) <= 0 THEN 'payee'::public.invoice_status
+        WHEN v_total_paye > 0 THEN 'partiellement_payee'::public.invoice_status
+        ELSE status
+      END
+  WHERE id = v_invoice_id;
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_payments_calc ON public.payments;
+CREATE TRIGGER trg_payments_calc AFTER INSERT OR UPDATE OR DELETE ON public.payments FOR EACH ROW EXECUTE FUNCTION public.trg_update_invoice_payments();
+
+-- 7. DÉCRÉMENTATION DE STOCK LORS DE LA FACTURATION PAYÉE
+CREATE OR REPLACE FUNCTION public.trg_decrement_stock_on_invoice()
+RETURNS TRIGGER 
+LANGUAGE plpgsql 
+SECURITY DEFINER 
+SET search_path = public 
+AS $$
+BEGIN
+  IF NEW.status = 'payee' AND (OLD.status IS NULL OR OLD.status != 'payee') THEN
+    INSERT INTO public.parts_stock_audit (garage_id, part_id, delta, reason, created_by)
+    SELECT 
+      NEW.garage_id, 
+      il.part_id, 
+      -il.quantite, 
+      'Vente Facture: ' || NEW.number, 
+      auth.uid()
+    FROM public.invoice_lines il
+    WHERE il.invoice_id = NEW.id AND il.part_id IS NOT NULL;
+
+    UPDATE public.parts p
+    SET quantite_stock = p.quantite_stock - il.quantite
+    FROM public.invoice_lines il
+    WHERE il.invoice_id = NEW.id AND il.part_id = p.id;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_invoice_paid_stock ON public.invoices;
+CREATE TRIGGER trg_invoice_paid_stock AFTER UPDATE OF status ON public.invoices FOR EACH ROW EXECUTE FUNCTION public.trg_decrement_stock_on_invoice();
