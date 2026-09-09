@@ -1,20 +1,45 @@
-project_id = "votre-id-projet"
-    [api]
-    enabled = true
-    port = 54321
-    schemas = ["public", "graphql_public"]
-    extra_search_path = ["public", "extensions"]
-    max_rows = 1000
-    [db]
-    port = 54322
-    major_version = 15
-    [studio]
-    enabled = true
-    port = 54323
-    [functions]
-    verify_jwt = true
-    [auth]
-    site_url = "http://localhost:3000"
-    enable_signup = true
-    [auth.email]
-    enable_confirmations = false
+# Configuration Supabase CLI - RDV ROBOT GARAGE V2
+project_id = "rdv-robot-garage-v2"
+
+[api]
+enabled = true
+port = 54321
+# Schémas exposés via l'API Supabase
+schemas = ["public", "graphql_public"]
+# Requis pour accéder aux extensions comme pgcrypto (digest) dans public
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+# Version majeure recommandée pour bénéficier des fonctions cryptographiques et RLS
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[functions]
+# Vérification JWT activée par défaut pour sécuriser vos Edge Functions
+verify_jwt = true
+
+[auth]
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/**"]
+enable_signup = true
+
+[auth.email]
+enable_confirmations = false
+
+# ==============================================================================
+# CONFIGURATIONS SPÉCIFIQUES POUR RDV ROBOT GARAGE V2
+# ==============================================================================
+
+# 1. Edge Function pour l'envoi des notifications (WhatsApp/SMS via worker)
+[functions.send-notifications]
+verify_jwt = false # Permet aux triggers internes ou webhooks d'appeler l'Edge Function
+
+# 2. Configuration du stockage local Supabase Storage (ex: Factures PDF, logos garages)
+[storage]
+enabled = true
+file_size_limit = "10MB"
