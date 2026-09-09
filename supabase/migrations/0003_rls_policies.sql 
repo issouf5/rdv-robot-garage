@@ -1,23 +1,119 @@
-alter table public.garages enable row level security; alter table public.garage_users enable row level security; alter table public.customers enable row level security; alter table public.vehicles enable row level security; alter table public.mechanics enable row level security; alter table public.appointments enable row level security; alter table public.work_orders enable row level security; alter table public.work_order_parts enable row level security; alter table public.work_order_history enable row level security; alter table public.suppliers enable row level security; alter table public.parts enable row level security; alter table public.stock_movements enable row level security; alter table public.purchase_orders enable row level security; alter table public.purchase_order_lines enable row level security; alter table public.quotes enable row level security; alter table public.quote_lines enable row level security; alter table public.invoices enable row level security; alter table public.invoice_lines enable row level security; alter table public.payments enable row level security; alter table public.document_counters enable row level security; alter table public.audit_log enable row level security; alter table public.reminder_templates enable row level security; alter table public.reminders enable row level security; alter table public.bonus_rules enable row level security; alter table public.notification_queue enable row level security;
+-- ============================================================================
+-- RDV ROBOT GARAGE V2 - MODULE 0003 : SÉCURITÉ & POLITIQUES RLS
+-- ============================================================================
 
-create policy garages_select on public.garages for select using (id = public.current_garage_id());
-create policy garages_update on public.garages for update using (id = public.current_garage_id() and public.has_role(array['proprietaire','gerant']::public.user_role[]));
-create policy gu_select on public.garage_users for select using (garage_id = public.current_garage_id() or user_id = auth.uid());
-create policy gu_insert on public.garage_users for insert with check (garage_id = public.current_garage_id() and public.has_role(array['proprietaire']::public.user_role[]));
-create policy gu_update on public.garage_users for update using (garage_id = public.current_garage_id() and public.has_role(array['proprietaire']::public.user_role[]));
-create policy customers_all on public.customers for all using (garage_id = public.current_garage_id()) with check (garage_id = public.current_garage_id());
-create policy vehicles_all on public.vehicles for all using (garage_id = public.current_garage_id()) with check (garage_id = public.current_garage_id());
-create policy mechanics_all on public.mechanics for all using (garage_id = public.current_garage_id()) with check (garage_id = public.current_garage_id());
-create policy appts_all on public.appointments for all using (garage_id = public.current_garage_id()) with check (garage_id = public.current_garage_id());
-create policy wo_select on public.work_orders for select using (garage_id = public.current_garage_id() and (public.has_role(array['proprietaire','gerant','reception']::public.user_role[]) or (public.has_role(array['mecanicien']::public.user_role[]) and mechanic_id = public.current_mechanic_id())));
-create policy wo_write on public.work_orders for all using (garage_id = public.current_garage_id() and public.has_role(array['proprietaire','gerant','reception','mecanicien']::public.user_role[])) with check (garage_id = public.current_garage_id());
-create policy parts_all on public.parts for all using (garage_id = public.current_garage_id()) with check (garage_id = public.current_garage_id());
-create policy po_all on public.purchase_orders for all using (garage_id = public.current_garage_id()) with check (garage_id = public.current_garage_id());
-create policy finance_all on public.quotes for all using (garage_id = public.current_garage_id()) with check (garage_id = public.current_garage_id());
-create policy finance_all_inv on public.invoices for all using (garage_id = public.current_garage_id()) with check (garage_id = public.current_garage_id());
-create policy pay_all on public.payments for all using (garage_id = public.current_garage_id()) with check (garage_id = public.current_garage_id());
-create policy rt_select on public.reminder_templates for select using (garage_id = public.current_garage_id());
-create policy rt_write on public.reminder_templates for all using (garage_id = public.current_garage_id() and public.has_role(array['proprietaire','gerant']::public.user_role[])) with check (garage_id = public.current_garage_id());
-create policy rem_select on public.reminders for select using (garage_id = public.current_garage_id());
-create policy br_all on public.bonus_rules for all using (garage_id = public.current_garage_id()) with check (garage_id = public.current_garage_id());
-create policy nq_select on public.notification_queue for select using (garage_id = public.current_garage_id());
+-- 1. ACTIVATION DU ROW LEVEL SECURITY SUR TOUTES LES TABLES
+
+ALTER TABLE public.garages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.garage_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vehicles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.parts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.appointments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.work_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.quotes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.quote_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invoice_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.work_order_parts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.parts_stock_audit ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.notifications_queue ENABLE ROW LEVEL SECURITY;
+
+-- 2. POLITIQUES POUR LA TABLE GARAGES
+DROP POLICY IF EXISTS "Lecture des garages par membres" ON public.garages;
+CREATE POLICY "Lecture des garages par membres" ON public.garages
+  FOR SELECT USING (
+    id = public.current_garage_id(id)
+  );
+
+DROP POLICY IF EXISTS "Modification du garage par admin" ON public.garages;
+CREATE POLICY "Modification du garage par admin" ON public.garages
+  FOR UPDATE USING (
+    id = public.current_garage_id(id) AND EXISTS (
+      SELECT 1 FROM public.garage_users 
+      WHERE user_id = auth.uid() AND garage_id = id AND role IN ('super_admin', 'admin_garage')
+    )
+  );
+
+-- 3. POLITIQUES POUR GARAGE_USERS
+DROP POLICY IF EXISTS "Voir membres de son garage" ON public.garage_users;
+CREATE POLICY "Voir membres de son garage" ON public.garage_users
+  FOR SELECT USING (
+    garage_id = public.current_garage_id(garage_id)
+  );
+
+-- 4. POLITIQUES TABLES PRINCIPALES (CUSTOMERS, VEHICLES, PARTS, APPOINTMENTS, WORK_ORDERS, QUOTES, INVOICES)
+
+-- CUSTOMERS
+DROP POLICY IF EXISTS "Accès clients par garage" ON public.customers;
+CREATE POLICY "Accès clients par garage" ON public.customers
+  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+
+-- VEHICLES
+DROP POLICY IF EXISTS "Accès véhicules par garage" ON public.vehicles;
+CREATE POLICY "Accès véhicules par garage" ON public.vehicles
+  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+
+-- PARTS
+DROP POLICY IF EXISTS "Accès stock par garage" ON public.parts;
+CREATE POLICY "Accès stock par garage" ON public.parts
+  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+
+-- APPOINTMENTS
+DROP POLICY IF EXISTS "Accès rdv par garage" ON public.appointments;
+CREATE POLICY "Accès rdv par garage" ON public.appointments
+  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+
+-- WORK_ORDERS
+DROP POLICY IF EXISTS "Accès OR par garage" ON public.work_orders;
+CREATE POLICY "Accès OR par garage" ON public.work_orders
+  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+
+-- QUOTES
+DROP POLICY IF EXISTS "Accès devis par garage" ON public.quotes;
+CREATE POLICY "Accès devis par garage" ON public.quotes
+  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+
+-- INVOICES
+DROP POLICY IF EXISTS "Accès factures par garage" ON public.invoices;
+CREATE POLICY "Accès factures par garage" ON public.invoices
+  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+
+-- PAYMENTS
+DROP POLICY IF EXISTS "Accès paiements par garage" ON public.payments;
+CREATE POLICY "Accès paiements par garage" ON public.payments
+  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+
+-- PARTS_STOCK_AUDIT
+DROP POLICY IF EXISTS "Accès audit stock par garage" ON public.parts_stock_audit;
+CREATE POLICY "Accès audit stock par garage" ON public.parts_stock_audit
+  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+
+-- NOTIFICATIONS_QUEUE
+DROP POLICY IF EXISTS "Accès notifications par garage" ON public.notifications_queue;
+CREATE POLICY "Accès notifications par garage" ON public.notifications_queue
+  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+
+-- 5. POLITIQUES DES TABLES DE DÉTAILS (LIGNES)
+
+-- QUOTE_LINES
+DROP POLICY IF EXISTS "Lignes devis accessibles par garage" ON public.quote_lines;
+CREATE POLICY "Lignes devis accessibles par garage" ON public.quote_lines
+  FOR ALL USING (
+    quote_id IN (SELECT id FROM public.quotes WHERE garage_id = public.current_garage_id(garage_id))
+  );
+
+-- INVOICE_LINES
+DROP POLICY IF EXISTS "Lignes facture accessibles par garage" ON public.invoice_lines;
+CREATE POLICY "Lignes facture accessibles par garage" ON public.invoice_lines
+  FOR ALL USING (
+    invoice_id IN (SELECT id FROM public.invoices WHERE garage_id = public.current_garage_id(garage_id))
+  );
+
+-- WORK_ORDER_PARTS
+DROP POLICY IF EXISTS "Pièces OR accessibles par garage" ON public.work_order_parts;
+CREATE POLICY "Pièces OR accessibles par garage" ON public.work_order_parts
+  FOR ALL USING (
+    work_order_id IN (SELECT id FROM public.work_orders WHERE garage_id = public.current_garage_id(garage_id))
+  );
