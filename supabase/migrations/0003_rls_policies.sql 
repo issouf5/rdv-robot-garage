@@ -2,118 +2,40 @@
 -- RDV ROBOT GARAGE V2 - MODULE 0003 : SÉCURITÉ & POLITIQUES RLS
 -- ============================================================================
 
--- 1. ACTIVATION DU ROW LEVEL SECURITY SUR TOUTES LES TABLES
-
 ALTER TABLE public.garages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.garage_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.customers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vehicles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.parts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.appointments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.work_orders ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.quotes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.quote_lines ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.invoice_lines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.parts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.work_order_parts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.parts_stock_audit ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.notifications_queue ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.invoices ENABLE ROW LEVEL SECURITY;
 
--- 2. POLITIQUES POUR LA TABLE GARAGES
-DROP POLICY IF EXISTS "Lecture des garages par membres" ON public.garages;
-CREATE POLICY "Lecture des garages par membres" ON public.garages
-  FOR SELECT USING (
-    id = public.current_garage_id(id)
-  );
+-- POLITIQUES GARAGES
+CREATE POLICY p_garages_select ON public.garages FOR SELECT
+  USING (id = public.current_garage_id(id));
 
-DROP POLICY IF EXISTS "Modification du garage par admin" ON public.garages;
-CREATE POLICY "Modification du garage par admin" ON public.garages
-  FOR UPDATE USING (
-    id = public.current_garage_id(id) AND EXISTS (
-      SELECT 1 FROM public.garage_users 
-      WHERE user_id = auth.uid() AND garage_id = id AND role IN ('super_admin', 'admin_garage')
-    )
-  );
+-- POLITIQUES CUSTOMERS
+CREATE POLICY p_customers_all ON public.customers FOR ALL
+  USING (garage_id = public.current_garage_id(garage_id));
 
--- 3. POLITIQUES POUR GARAGE_USERS
-DROP POLICY IF EXISTS "Voir membres de son garage" ON public.garage_users;
-CREATE POLICY "Voir membres de son garage" ON public.garage_users
-  FOR SELECT USING (
-    garage_id = public.current_garage_id(garage_id)
-  );
+-- POLITIQUES VEHICLES
+CREATE POLICY p_vehicles_all ON public.vehicles FOR ALL
+  USING (garage_id = public.current_garage_id(garage_id));
 
--- 4. POLITIQUES TABLES PRINCIPALES (CUSTOMERS, VEHICLES, PARTS, APPOINTMENTS, WORK_ORDERS, QUOTES, INVOICES)
+-- POLITIQUES APPOINTMENTS
+CREATE POLICY p_appointments_all ON public.appointments FOR ALL
+  USING (garage_id = public.current_garage_id(garage_id));
 
--- CUSTOMERS
-DROP POLICY IF EXISTS "Accès clients par garage" ON public.customers;
-CREATE POLICY "Accès clients par garage" ON public.customers
-  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+-- POLITIQUES WORK ORDERS
+CREATE POLICY p_work_orders_all ON public.work_orders FOR ALL
+  USING (garage_id = public.current_garage_id(garage_id));
 
--- VEHICLES
-DROP POLICY IF EXISTS "Accès véhicules par garage" ON public.vehicles;
-CREATE POLICY "Accès véhicules par garage" ON public.vehicles
-  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
+-- POLITIQUES PARTS
+CREATE POLICY p_parts_all ON public.parts FOR ALL
+  USING (garage_id = public.current_garage_id(garage_id));
 
--- PARTS
-DROP POLICY IF EXISTS "Accès stock par garage" ON public.parts;
-CREATE POLICY "Accès stock par garage" ON public.parts
-  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
-
--- APPOINTMENTS
-DROP POLICY IF EXISTS "Accès rdv par garage" ON public.appointments;
-CREATE POLICY "Accès rdv par garage" ON public.appointments
-  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
-
--- WORK_ORDERS
-DROP POLICY IF EXISTS "Accès OR par garage" ON public.work_orders;
-CREATE POLICY "Accès OR par garage" ON public.work_orders
-  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
-
--- QUOTES
-DROP POLICY IF EXISTS "Accès devis par garage" ON public.quotes;
-CREATE POLICY "Accès devis par garage" ON public.quotes
-  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
-
--- INVOICES
-DROP POLICY IF EXISTS "Accès factures par garage" ON public.invoices;
-CREATE POLICY "Accès factures par garage" ON public.invoices
-  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
-
--- PAYMENTS
-DROP POLICY IF EXISTS "Accès paiements par garage" ON public.payments;
-CREATE POLICY "Accès paiements par garage" ON public.payments
-  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
-
--- PARTS_STOCK_AUDIT
-DROP POLICY IF EXISTS "Accès audit stock par garage" ON public.parts_stock_audit;
-CREATE POLICY "Accès audit stock par garage" ON public.parts_stock_audit
-  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
-
--- NOTIFICATIONS_QUEUE
-DROP POLICY IF EXISTS "Accès notifications par garage" ON public.notifications_queue;
-CREATE POLICY "Accès notifications par garage" ON public.notifications_queue
-  FOR ALL USING (garage_id = public.current_garage_id(garage_id));
-
--- 5. POLITIQUES DES TABLES DE DÉTAILS (LIGNES)
-
--- QUOTE_LINES
-DROP POLICY IF EXISTS "Lignes devis accessibles par garage" ON public.quote_lines;
-CREATE POLICY "Lignes devis accessibles par garage" ON public.quote_lines
-  FOR ALL USING (
-    quote_id IN (SELECT id FROM public.quotes WHERE garage_id = public.current_garage_id(garage_id))
-  );
-
--- INVOICE_LINES
-DROP POLICY IF EXISTS "Lignes facture accessibles par garage" ON public.invoice_lines;
-CREATE POLICY "Lignes facture accessibles par garage" ON public.invoice_lines
-  FOR ALL USING (
-    invoice_id IN (SELECT id FROM public.invoices WHERE garage_id = public.current_garage_id(garage_id))
-  );
-
--- WORK_ORDER_PARTS
-DROP POLICY IF EXISTS "Pièces OR accessibles par garage" ON public.work_order_parts;
-CREATE POLICY "Pièces OR accessibles par garage" ON public.work_order_parts
-  FOR ALL USING (
-    work_order_id IN (SELECT id FROM public.work_orders WHERE garage_id = public.current_garage_id(garage_id))
-  );
+-- POLITIQUES INVOICES
+CREATE POLICY p_invoices_all ON public.invoices FOR ALL
+  USING (garage_id = public.current_garage_id(garage_id));
